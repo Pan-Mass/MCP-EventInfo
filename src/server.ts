@@ -5,39 +5,39 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 /**
- * Multi-Site Documentation Server - Firebase App Hosting Edition
- * Provides tools to fetch and search documentation from multiple sites:
- * - Module Federation
- * - Modern.js
- * - Firebase
+ * Event Information Server - Firebase App Hosting Edition
+ * Provides tools to fetch and search event information from cycling event sites:
+ * - PMC (Pan-Mass Challenge)
+ * - Unpaved
+ * - Winter Cycle
  */
 
-// Supported documentation sites
-interface DocSite {
+// Supported event sites
+interface EventSite {
   name: string;
   baseUrl: string;
-  indexPath: string;
+  sitemapPath: string;
 }
 
-const DOC_SITES: Record<string, DocSite> = {
-  "module-federation": {
-    name: "Module Federation",
-    baseUrl: "https://module-federation.io",
-    indexPath: "/llms.txt",
+const EVENT_SITES: Record<string, EventSite> = {
+  pmc: {
+    name: "Pan-Mass Challenge",
+    baseUrl: "https://www.pmc.org",
+    sitemapPath: "/sitemap.xml",
   },
-  modernjs: {
-    name: "Modern.js",
-    baseUrl: "https://modernjs.dev",
-    indexPath: "/llms.txt",
+  unpaved: {
+    name: "Unpaved",
+    baseUrl: "https://www.unpaved.org",
+    sitemapPath: "/sitemap.xml",
   },
-  firebase: {
-    name: "Firebase",
-    baseUrl: "https://firebase.google.com/docs",
-    indexPath: "/llms.txt",
+  wintercycle: {
+    name: "Winter Cycle",
+    baseUrl: "https://www.wintercycle.org",
+    sitemapPath: "/sitemap.xml",
   },
 };
 
-const VALID_SITES = Object.keys(DOC_SITES).join(", ");
+const VALID_SITES = Object.keys(EVENT_SITES).join(", ");
 
 // Helper function to fetch content from a URL
 async function fetchContent(url: string): Promise<string> {
@@ -53,38 +53,69 @@ async function fetchContent(url: string): Promise<string> {
   }
 }
 
+// Helper function to parse sitemap XML
+function parseSitemap(xml: string): string[] {
+  const urlRegex = /<loc>(.*?)<\/loc>/g;
+  const urls: string[] = [];
+  let match;
+  while ((match = urlRegex.exec(xml)) !== null) {
+    urls.push(match[1]);
+  }
+  return urls;
+}
+
+// Helper function to extract text content from HTML
+function extractTextFromHtml(html: string): string {
+  // Remove script and style tags with their content
+  let text = html.replace(
+    /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+    "",
+  );
+  text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "");
+  // Remove HTML tags
+  text = text.replace(/<[^>]+>/g, " ");
+  // Decode common HTML entities
+  text = text.replace(/&nbsp;/g, " ");
+  text = text.replace(/&amp;/g, "&");
+  text = text.replace(/&lt;/g, "<");
+  text = text.replace(/&gt;/g, ">");
+  text = text.replace(/&quot;/g, '"');
+  text = text.replace(/&#39;/g, "'");
+  // Normalize whitespace
+  text = text.replace(/\s+/g, " ").trim();
+  return text;
+}
+
 // Create MCP server factory function
 function createMcpServer() {
   const mcp = new McpServer({
-    name: "multi-site-documentation-server",
+    name: "event-info-server",
     version: "1.0.0",
   });
 
   /**
-   * Tool 1: Fetch Documentation Index
-   * Retrieves the complete documentation index from llms.txt
+   * Tool 1: Fetch Sitemap
+   * Retrieves and parses the sitemap from an event site
    */
   mcp.registerTool(
-    "fetch_doc_index",
+    "fetch_sitemap",
     {
       description:
-        `Fetches the complete documentation index for a specified site. ` +
+        `Fetches and parses the sitemap for a specified event site. ` +
         `Supported sites: ${VALID_SITES}. ` +
-        "The index contains a structured overview of all available documentation pages. " +
-        "Use this to discover available documentation before fetching specific pages.",
+        "Returns a list of all URLs found in the sitemap, which can be used to discover event pages.",
       inputSchema: {
         site: z
-          .enum(["module-federation", "modernjs", "firebase"])
-          .default("module-federation")
+          .enum(["pmc", "unpaved", "wintercycle"])
           .describe(
-            `The documentation site to fetch from. Options: ${VALID_SITES} (default: module-federation)`,
+            `The event site to fetch sitemap from. Options: ${VALID_SITES}`,
           ),
       },
     },
     async ({ site }) => {
       try {
-        const docSite = DOC_SITES[site];
-        if (!docSite) {
+        const eventSite = EVENT_SITES[site];
+        if (!eventSite) {
           return {
             content: [
               {
@@ -96,13 +127,15 @@ function createMcpServer() {
           };
         }
 
-        const indexUrl = `${docSite.baseUrl}${docSite.indexPath}`;
-        const content = await fetchContent(indexUrl);
+        const sitemapUrl = `${eventSite.baseUrl}${eventSite.sitemapPath}`;
+        const sitemapXml = await fetchContent(sitemapUrl);
+        const urls = parseSitemap(sitemapXml);
+
         return {
           content: [
             {
               type: "text",
-              text: `Documentation index for ${docSite.name}:\n\n${content}`,
+              text: `Sitemap for ${eventSite.name} (${urls.length} URLs found):\n\n${urls.join("\n")}`,
             },
           ],
         };
@@ -123,61 +156,82 @@ function createMcpServer() {
   );
 
   /**
-   * Tool 2: Fetch Documentation Page
-   * Retrieves content from a specific documentation page
+   * Tool 2: Get Event Page
+   * Retrieves content from a specific event page
    */
   mcp.registerTool(
-    "fetch_doc_page",
+    "get_event_page",
     {
       description:
-        "Fetches content from a specific documentation page. " +
-        "Provide either a full URL or a relative path (e.g., '/docs/concepts/architecture'). " +
-        "Use fetch_doc_index first to discover available pages.",
+        "Fetches content from a specific event page. " +
+        "Provide either a full URL or a relative path. " +
+        "The HTML content will be converted to text for easier reading. " +
+        "Use fetch_sitemap first to discover available event pages.",
       inputSchema: {
         url: z
           .string()
           .describe(
-            "The URL or path to fetch. Can be a full URL (https://...) or relative path (/docs/...)",
+            "The URL or path to fetch. Can be a full URL (https://...) or relative path (/event/...)",
           ),
         site: z
-          .enum(["module-federation", "modernjs", "firebase"])
-          .default("module-federation")
+          .enum(["pmc", "unpaved", "wintercycle"])
+          .optional()
           .describe(
-            `The documentation site (used for relative paths). Options: ${VALID_SITES} (default: module-federation)`,
+            `The event site (used for relative paths). Options: ${VALID_SITES}`,
+          ),
+        extractText: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Whether to extract plain text from HTML (default: true). Set to false to get raw HTML.",
           ),
       },
     },
-    async ({ url, site }) => {
+    async ({ url, site, extractText }) => {
       try {
-        const docSite = DOC_SITES[site];
-        if (!docSite) {
+        // Normalize the URL
+        let fetchUrl: string;
+        if (url.startsWith("http://") || url.startsWith("https://")) {
+          fetchUrl = url;
+        } else if (site) {
+          const eventSite = EVENT_SITES[site];
+          if (!eventSite) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `Error: Unknown site "${site}". Valid sites are: ${VALID_SITES}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          fetchUrl = url.startsWith("/")
+            ? `${eventSite.baseUrl}${url}`
+            : `${eventSite.baseUrl}/${url}`;
+        } else {
           return {
             content: [
               {
                 type: "text",
-                text: `Error: Unknown site "${site}". Valid sites are: ${VALID_SITES}`,
+                text: `Error: Must provide either a full URL or a relative path with a site parameter`,
               },
             ],
             isError: true,
           };
         }
 
-        // Normalize the URL
-        let fetchUrl: string;
-        if (url.startsWith("http://") || url.startsWith("https://")) {
-          fetchUrl = url;
-        } else if (url.startsWith("/")) {
-          fetchUrl = `${docSite.baseUrl}${url}`;
-        } else {
-          fetchUrl = `${docSite.baseUrl}/${url}`;
-        }
-
         const content = await fetchContent(fetchUrl);
+        const displayContent = extractText
+          ? extractTextFromHtml(content)
+          : content;
+
         return {
           content: [
             {
               type: "text",
-              text: `Content from ${fetchUrl} (${docSite.name}):\n\n${content}`,
+              text: `Content from ${fetchUrl}:\n\n${displayContent}`,
             },
           ],
         };
@@ -198,27 +252,24 @@ function createMcpServer() {
   );
 
   /**
-   * Tool 3: Search Documentation
-   * Searches for a term in the documentation index
+   * Tool 3: Search Events
+   * Searches for events in the sitemap by URL pattern
    */
   mcp.registerTool(
-    "search_docs",
+    "search_events",
     {
       description:
-        "Searches for a term in a documentation site's index. " +
-        "Returns matching sections from the index with context. " +
-        "Useful for finding specific topics or features in the documentation.",
+        "Searches for event-related URLs in a site's sitemap by matching URL patterns. " +
+        "Returns matching URLs that can be used with get_event_page. " +
+        "Useful for finding specific events or event types.",
       inputSchema: {
-        query: z
+        site: z
+          .enum(["pmc", "unpaved", "wintercycle"])
+          .describe(`The event site to search. Options: ${VALID_SITES}`),
+        pattern: z
           .string()
           .describe(
-            "The search term or phrase to look for in the documentation",
-          ),
-        site: z
-          .enum(["module-federation", "modernjs", "firebase"])
-          .default("module-federation")
-          .describe(
-            `The documentation site to search. Options: ${VALID_SITES} (default: module-federation)`,
+            "The search pattern to match in URLs (e.g., 'event', 'ride', '2026')",
           ),
         caseInsensitive: z
           .boolean()
@@ -229,10 +280,10 @@ function createMcpServer() {
           ),
       },
     },
-    async ({ query, site, caseInsensitive }) => {
+    async ({ site, pattern, caseInsensitive }) => {
       try {
-        const docSite = DOC_SITES[site];
-        if (!docSite) {
+        const eventSite = EVENT_SITES[site];
+        if (!eventSite) {
           return {
             content: [
               {
@@ -244,23 +295,14 @@ function createMcpServer() {
           };
         }
 
-        const indexUrl = `${docSite.baseUrl}${docSite.indexPath}`;
-        const indexContent = await fetchContent(indexUrl);
-        const lines = indexContent.split("\n");
-        const matches: string[] = [];
+        const sitemapUrl = `${eventSite.baseUrl}${eventSite.sitemapPath}`;
+        const sitemapXml = await fetchContent(sitemapUrl);
+        const urls = parseSitemap(sitemapXml);
 
-        const searchQuery = caseInsensitive ? query.toLowerCase() : query;
-
-        lines.forEach((line, index) => {
-          const searchLine = caseInsensitive ? line.toLowerCase() : line;
-          if (searchLine.includes(searchQuery)) {
-            // Add context: previous line, matching line, next line
-            const context: string[] = [];
-            if (index > 0) context.push(lines[index - 1]);
-            context.push(lines[index]);
-            if (index < lines.length - 1) context.push(lines[index + 1]);
-            matches.push(context.join("\n"));
-          }
+        const searchPattern = caseInsensitive ? pattern.toLowerCase() : pattern;
+        const matches = urls.filter((url) => {
+          const searchUrl = caseInsensitive ? url.toLowerCase() : url;
+          return searchUrl.includes(searchPattern);
         });
 
         if (matches.length === 0) {
@@ -268,7 +310,7 @@ function createMcpServer() {
             content: [
               {
                 type: "text",
-                text: `No matches found for "${query}" in the ${docSite.name} documentation index.`,
+                text: `No URLs found matching pattern "${pattern}" in the ${eventSite.name} sitemap.`,
               },
             ],
           };
@@ -278,7 +320,79 @@ function createMcpServer() {
           content: [
             {
               type: "text",
-              text: `Found ${matches.length} match${matches.length === 1 ? "" : "es"} for "${query}" in ${docSite.name}:\n\n${matches.join("\n---\n")}`,
+              text: `Found ${matches.length} URL${matches.length === 1 ? "" : "s"} matching "${pattern}" in ${eventSite.name}:\n\n${matches.join("\n")}`,
+            },
+          ],
+        };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error: ${errorMessage}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  /**
+   * Tool 4: List All Events
+   * Gets an overview of all event-related URLs from a site
+   */
+  mcp.registerTool(
+    "list_all_events",
+    {
+      description:
+        "Lists all URLs from a site's sitemap with optional filtering. " +
+        "Provides a complete overview of available pages. " +
+        "Use this to discover what events and information are available.",
+      inputSchema: {
+        site: z
+          .enum(["pmc", "unpaved", "wintercycle"])
+          .describe(
+            `The event site to list URLs from. Options: ${VALID_SITES}`,
+          ),
+        limit: z
+          .number()
+          .optional()
+          .default(50)
+          .describe(
+            "Maximum number of URLs to return (default: 50). Set to 0 for no limit.",
+          ),
+      },
+    },
+    async ({ site, limit }) => {
+      try {
+        const eventSite = EVENT_SITES[site];
+        if (!eventSite) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error: Unknown site "${site}". Valid sites are: ${VALID_SITES}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const sitemapUrl = `${eventSite.baseUrl}${eventSite.sitemapPath}`;
+        const sitemapXml = await fetchContent(sitemapUrl);
+        const urls = parseSitemap(sitemapXml);
+
+        const limitedUrls = limit > 0 ? urls.slice(0, limit) : urls;
+        const hasMore = limit > 0 && urls.length > limit;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${eventSite.name} - Found ${urls.length} total URLs${hasMore ? ` (showing first ${limit})` : ""}:\n\n${limitedUrls.join("\n")}${hasMore ? `\n\n... and ${urls.length - limit} more` : ""}`,
             },
           ],
         };
@@ -316,14 +430,14 @@ app.get("/healthz", (_req, res) => {
 // Root endpoint
 app.get("/", (_req, res) => {
   res.json({
-    name: "multi-site-documentation-server",
+    name: "event-info-server",
     version: "1.0.0",
     status: "running",
     endpoints: {
       health: "/healthz",
       mcp: "/mcp",
     },
-    supportedSites: Object.keys(DOC_SITES),
+    supportedSites: Object.keys(EVENT_SITES),
   });
 });
 
@@ -374,12 +488,13 @@ app.all("/mcp", async (req, res) => {
 // Start the server
 const port = parseInt(process.env.PORT || "8080", 10);
 app.listen(port, "0.0.0.0", () => {
-  console.error(`Multi-Site Documentation Server listening on port ${port}`);
+  console.error(`Event Information Server listening on port ${port}`);
   console.error(`Health check: http://0.0.0.0:${port}/healthz`);
   console.error(`MCP endpoint: http://0.0.0.0:${port}/mcp`);
   console.error(`Supported sites: ${VALID_SITES}`);
   console.error("Available tools:");
-  console.error("  - fetch_doc_index: Get the documentation index for a site");
-  console.error("  - fetch_doc_page: Fetch a specific documentation page");
-  console.error("  - search_docs: Search documentation");
+  console.error("  - fetch_sitemap: Get the sitemap for an event site");
+  console.error("  - get_event_page: Fetch a specific event page");
+  console.error("  - search_events: Search for events by URL pattern");
+  console.error("  - list_all_events: List all URLs from a site");
 });

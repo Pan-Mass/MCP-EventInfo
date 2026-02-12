@@ -1,11 +1,11 @@
 {
-  "name": "multi-site-documentation-server",
+  "name": "event-info-server",
   "version": "1.0.0",
-  "description": "MCP server for fetching documentation from Module Federation, Modern.js, and Firebase",
+  "description": "MCP server for fetching event information from PMC, Unpaved, and Winter Cycle cycling events",
   "type": "module",
   "main": "build/server.js",
   "bin": {
-    "multi-site-doc-server": "./build/index.js"
+    "event-info-server": "./build/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -19,7 +19,11 @@
   },
   "keywords": [
     "mcp",
-    "documentation",
+    "events",
+    "cycling",
+    "pmc",
+    "unpaved",
+    "wintercycle",
     "model-context-protocol",
     "firebase-app-hosting"
   ],
